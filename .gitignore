@@ -1,0 +1,38 @@
+# ── 数据与权重：只上传代码，这些目录不进仓库 ──────────────────
+# 原始数据集（约 30 GB）
+data/
+# 处理好的训练数据（约 1.1 GB）
+datasets/
+# 预训练权重和训练产出的模型（每个 .pth 约 340 MB）
+weights/
+work_dirs/
+checkpoints/
+
+# 历史备份文件
+_archive/
+
+# ── Python 缓存与打包产物 ──────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+build/
+dist/
+*.egg-info/
+.eggs/
+.mim/
+
+# ── 工具与编辑器 ───────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── 日志与临时文件 ─────────────────────────────────────────────
+*.log
+*.tmp
+tmp/
+
+# ── 上游 mmrotate 自带的教程 notebook（含 17 MB 输出，非本项目代码）──
+code/demo/MMRotate_Tutorial.ipynb

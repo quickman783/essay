@@ -1,0 +1,17 @@
+CLASS DESCRIPTION ON XML GENERATION
+Target classes (the only ones written to XML): 1 car, 2 truck, 4 tractor, 5 camping car, 9 van, 11 pickup
+Ignored classes: 7 motorcycle, 8 bus, 10 other, 12 large, 23 boat, 31 plane
+TFRecord label ids (generate_tfrecord_vedai.py): car=1, truck=2, pickup=3, tractor=4, camping car=5, van=6
+
+1: car
+2:truck
+4:tractor 
+5:camping car 
+7:motorcycle 
+8:bus (ignored)
+9:van 
+10:other 
+11:pickup 
+12:large
+23:boat 
+31:plane
