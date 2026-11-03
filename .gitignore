@@ -33,6 +33,8 @@ Thumbs.db
 *.log
 *.tmp
 tmp/
+# 循环训练的停止标记
+STOP
 
 # ── 上游 mmrotate 自带的教程 notebook（含 17 MB 输出，非本项目代码）──
 code/demo/MMRotate_Tutorial.ipynb
