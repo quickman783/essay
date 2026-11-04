@@ -159,12 +159,14 @@ def prepare_split(source_root, output_root, split, dataset, shift, raw_annotatio
     names = sorted(name for name in os.listdir(label_vi) if name.lower().endswith(".xml"))
     written = 0
     skipped = 0
+    written_ids = set()
     for name in tqdm(names, desc="{0:<5}".format(split)):
         image_id = osp.splitext(name)[0]
         target_vi = osp.join(output_vi, image_id + ".txt")
         target_ir = osp.join(output_ir, image_id + ".txt")
         if not overwrite and osp.exists(target_vi) and osp.exists(target_ir):
             written += 1
+            written_ids.add(image_id)
             continue
 
         lines = None
@@ -181,6 +183,18 @@ def prepare_split(source_root, output_root, split, dataset, shift, raw_annotatio
         write_lines(target_vi, lines)
         write_lines(target_ir, lines)
         written += 1
+        written_ids.add(image_id)
+
+    if overwrite:
+        for folder in (output_vi, output_ir):
+            cleaned = 0
+            for existing in os.listdir(folder):
+                stem, ext = osp.splitext(existing)
+                if ext.lower() == ".txt" and stem not in written_ids:
+                    os.remove(osp.join(folder, existing))
+                    cleaned += 1
+            if cleaned:
+                print("{0}: 清掉 {1} 个不属于本划分的旧标注".format(split, cleaned))
     return written, skipped
 
 

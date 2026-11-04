@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 SPLITS = ['train', 'val', 'test']
 
 # 默认按 7:1:2 划分训练 / 验证 / 测试集
-DEFAULT_RATIOS = [0.7, 0.1, 0.2]
+DEFAULT_RATIOS = [0.7, 0.2, 0.1]
 
 CLASS_NAMES = ['car', 'truck', 'tractor', 'camping car', 'van', 'pickup']
 

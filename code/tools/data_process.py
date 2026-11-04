@@ -82,6 +82,19 @@ def convert(source, destination, crop=None, to_gray=False):
     imwrite_unicode(destination, image)
 
 
+def prune(output_dir, keep_ids, suffix):
+    """删掉本划分目录里不属于当前源划分的旧文件，避免上一次划分的残留混进来。"""
+    removed = 0
+    for name in os.listdir(output_dir):
+        stem, ext = osp.splitext(name)
+        if ext.lower() not in suffix:
+            continue
+        if stem not in keep_ids:
+            os.remove(osp.join(output_dir, name))
+            removed += 1
+    return removed
+
+
 def prepare_split(source_root, output_root, split, crop, ir_to_gray, overwrite):
     source_vi = osp.join(source_root, split, "{0}img".format(split))
     source_ir = osp.join(source_root, split, "{0}imgr".format(split))
@@ -94,6 +107,13 @@ def prepare_split(source_root, output_root, split, crop, ir_to_gray, overwrite):
     if not names:
         print("Skip {0}: no image found in {1}".format(split, source_vi))
         return 0
+
+    ids = {osp.splitext(name)[0] for name in names}
+    if overwrite:
+        for folder in (output_vi, output_ir):
+            cleaned = prune(folder, ids, IMAGE_SUFFIXES)
+            if cleaned:
+                print("{0}: 清掉 {1} 张不属于本划分的旧图片".format(split, cleaned))
 
     infrared = set(list_images(source_ir))
     missing_ir = 0

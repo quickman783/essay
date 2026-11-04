@@ -1,14 +1,19 @@
-"""一键重建 VEDAI 训练数据：重新划分 → 准备图像对 → 转换标注。
+"""一键重建 VEDAI 训练数据：准备图像对 → 转换标注（可选先重新划分）。
 
-默认按 7:1:2 划分 train / val / test。
+默认按 7:2:1 划分 train / val / test。
 
 为什么必须用这个脚本而不是分别跑三个命令：
-    旧的 `datasets/vedai` 里残留着上一次划分的文件。如果只重新划分而不清理，
-    同一张图片会同时出现在 train 和 val 里（数据泄漏），验证 mAP 会虚高。
+    旧的 `datasets/vedai` 里可能残留着上一次划分的文件。如果只重新划分而不清理，
+    同一张图片会同时出现在 train 和 val（或 val 和 test）里，验证/测试 mAP
+    会失真。本脚本会先清空 `datasets/vedai`，各步骤内部也会剔除不属于当前
+    划分的残留文件，最后做一致性校验，不通过就以非零码退出。
 
 用法（在仓库根目录执行）：
-    # 7:1:2（默认）
+    # 完整重建：重新划分 + 准备数据（默认 7:2:1）
     python code/scripts/rebuild_vedai.py
+
+    # 划分已经对了，只重建 datasets/vedai（推荐：不会动 data/VEDAI 的划分）
+    python code/scripts/rebuild_vedai.py --no-split
 
     # 其他比例，例如 8:1:1
     python code/scripts/rebuild_vedai.py --ratios 0.8 0.1 0.1
@@ -61,30 +66,47 @@ def check_inputs():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="重建 VEDAI 训练数据（默认 7:1:2）。")
+    parser = argparse.ArgumentParser(description="重建 VEDAI 训练数据（默认 7:2:1）。")
     parser.add_argument("--ratios", nargs=3, type=float, default=splitter.DEFAULT_RATIOS,
                         metavar=("TRAIN", "VAL", "TEST"),
-                        help="train/val/test 比例，默认 0.7 0.1 0.2")
+                        help="train/val/test 比例，默认 0.7 0.2 0.1")
     parser.add_argument("--seed", type=int, default=42, help="随机种子，默认 42")
     parser.add_argument("--mode", choices=["hardlink", "copy"], default="hardlink",
                         help="图像放入划分目录的方式，默认 hardlink（同盘不额外占空间）")
+    parser.add_argument("--no-split", action="store_true",
+                        help="跳过重新划分，直接用现有的 data/VEDAI/{train,val,test} 重建 datasets/vedai")
     args = parser.parse_args()
 
     check_inputs()
 
-    ratios = list(args.ratios)
-    total = sum(ratios)
-    if total <= 0:
-        raise SystemExit("比例之和必须大于 0。")
-    ratios = [r / total for r in ratios]
+    if args.no_split:
+        for split in SPLITS:
+            source = os.path.join(SPLIT_DIR, split, "{0}label".format(split))
+            if not os.path.isdir(source):
+                raise SystemExit(
+                    "找不到 {0}，无法使用 --no-split。\n"
+                    "请先不带 --no-split 跑一次，或检查 data/VEDAI 的划分目录。".format(source))
+        print("=" * 70)
+        print("第 1 步 / 3：跳过重新划分，沿用现有的 train / val / test")
+        for split in SPLITS:
+            count = len([n for n in os.listdir(os.path.join(SPLIT_DIR, split, "{0}img".format(split)))
+                         if os.path.splitext(n)[1].lower() in data_process.IMAGE_SUFFIXES])
+            print("  {0:<6}{1:>6} 张".format(split, count))
+        print("=" * 70)
+    else:
+        ratios = list(args.ratios)
+        total = sum(ratios)
+        if total <= 0:
+            raise SystemExit("比例之和必须大于 0。")
+        ratios = [r / total for r in ratios]
 
-    print("=" * 70)
-    print("第 1 步 / 3：按 {0:g} : {1:g} : {2:g} 重新划分 train / val / test".format(*ratios))
-    print("=" * 70)
-    splitter.split_dataset(
-        XML_DIR, IMAGE_DIR, SPLIT_DIR,
-        ratios=ratios, seed=args.seed, mode=args.mode, force=True,
-    )
+        print("=" * 70)
+        print("第 1 步 / 3：按 {0:g} : {1:g} : {2:g} 重新划分 train / val / test".format(*ratios))
+        print("=" * 70)
+        splitter.split_dataset(
+            XML_DIR, IMAGE_DIR, SPLIT_DIR,
+            ratios=ratios, seed=args.seed, mode=args.mode, force=True,
+        )
 
     print()
     print("=" * 70)
@@ -134,6 +156,19 @@ def verify():
             len(sub_ids["annofiles_vi"]), len(sub_ids["annofiles_ir"]),
             "一致" if same else "不一致 !!"))
         ok = ok and same
+
+        if not ids[split]:
+            print("       {0} 划分没有任何标注文件 !!".format(split))
+            ok = False
+            continue
+        source = os.path.join(SPLIT_DIR, split, "{0}label".format(split))
+        expected = {os.path.splitext(f)[0] for f in os.listdir(source)
+                    if f.lower().endswith(".xml")}
+        extra = ids[split] - expected
+        if extra:
+            print("       有 {0} 个标注不在源划分 {1} 里（上一次划分的残留）!!".format(
+                len(extra), os.path.basename(source)))
+            ok = False
 
     for left, right in (("train", "val"), ("train", "test"), ("val", "test")):
         inter = ids[left] & ids[right]
