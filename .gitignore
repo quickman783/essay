@@ -1,15 +1,17 @@
 # ── 数据与权重：只上传代码，这些目录不进仓库 ──────────────────
+# 每个模式前面的 / 表示"只匹配仓库根目录"，否则 git 会把
+# code/configs/_base_/datasets/ 和 code/mmrotate/datasets/ 也一起忽略掉
 # 原始数据集（约 30 GB）
-data/
+/data/
 # 处理好的训练数据（约 1.1 GB）
-datasets/
+/datasets/
 # 预训练权重和训练产出的模型（每个 .pth 约 340 MB）
-weights/
-work_dirs/
-checkpoints/
+/weights/
+/work_dirs/
+/checkpoints/
 
 # 历史备份文件
-_archive/
+/_archive/
 
 # ── Python 缓存与打包产物 ──────────────────────────────────────
 __pycache__/
