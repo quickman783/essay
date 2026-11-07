@@ -21,7 +21,8 @@ if CODE_DIR not in sys.path:
 PROFILES = {
     "vedai_dcfl": dict(
         label="VEDAI",
-        variant="DMM + DCFL 对照组（基线回归，不含 GauCho）",
+        variant="DMM + DCFL（对照组）",
+        detail="基线 L1 回归 + SmoothL1 损失，DCFL 动态分配（不含 GauCho）",
         config=os.path.join("code", "dmm_dcfl", "configs",
                             "dmm_dcfl_1x_vedai.py"),
         work_root=os.path.join("work_dirs", "dmm_dcfl_vedai_loop"),
@@ -33,7 +34,8 @@ PROFILES = {
     ),
     "dronevehicle_dcfl": dict(
         label="DroneVehicle",
-        variant="DMM + DCFL 对照组（基线回归，不含 GauCho）",
+        variant="DMM + DCFL（对照组）",
+        detail="基线 L1 回归 + SmoothL1 损失，DCFL 动态分配（不含 GauCho）",
         config=os.path.join("code", "dmm_dcfl", "configs",
                             "dmm_dcfl_1x_dronevehicle.py"),
         work_root=os.path.join("work_dirs", "dmm_dcfl_dronevehicle_loop"),

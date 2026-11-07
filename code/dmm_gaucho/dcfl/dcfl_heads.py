@@ -62,7 +62,14 @@ def dcfl_loss_by_feat(head, cls_scores, bbox_preds, batch_gt_instances,
     avg_factor = 0
 
     for img_id in range(num_imgs):
-        flat_anchors = get_box_tensor(cat_boxes(anchor_list[img_id]))
+        # 保留锚框原来的类型（这里是 RotatedBoxes，不是裸 Tensor）：
+        # 基线 DeltaXYWHTRBBoxCoder.encode 里的 bbox2delta 直接取
+        # ``proposals.tensor``，传 Tensor 进去会抛
+        # AttributeError: 'Tensor' object has no attribute 'tensor'。
+        # GauCho 的 coder 自己会 get_box_tensor，两种都能吃。
+        flat_anchors = cat_boxes(anchor_list[img_id])
+        # 标量目标张量统一从这里生成，避免依赖 BaseBoxes.new_* 的返回类型
+        flat_tensor = get_box_tensor(flat_anchors)
         valid_flags = torch.cat(valid_flag_list[img_id])
 
         inside_flags = anchor_inside_flags(
@@ -73,7 +80,9 @@ def dcfl_loss_by_feat(head, cls_scores, bbox_preds, batch_gt_instances,
                 '这张图没有任何落在图像内的有效锚框，检查 img_shape 或把 '
                 'allowed_border 设成 -1。')
 
+        # anchors 给 coder 用（保持 Boxes 类型），template 给 target 用（Tensor）
         anchors = flat_anchors[inside_flags]
+        template = flat_tensor[inside_flags]
         scores, preds = _flat_scores_preds(
             cls_scores, bbox_preds, img_id, inside_flags)
 
@@ -91,14 +100,15 @@ def dcfl_loss_by_feat(head, cls_scores, bbox_preds, batch_gt_instances,
         avg_factor += sampling_result.avg_factor
 
         # ---- 以下与 mmdet AnchorHead._get_targets_single 完全一致 ----
-        num_valid_anchors = anchors.shape[0]
+        num_valid_anchors = template.shape[0]
         target_dim = (gt_instances.bboxes.size(-1) if head.reg_decoded_bbox
                       else head.bbox_coder.encode_size)
-        bbox_targets = anchors.new_zeros(num_valid_anchors, target_dim)
-        bbox_weights = anchors.new_zeros(num_valid_anchors, target_dim)
-        labels = anchors.new_full(
+        bbox_targets = template.new_zeros(num_valid_anchors, target_dim)
+        bbox_weights = template.new_zeros(num_valid_anchors, target_dim)
+        labels = template.new_full(
             (num_valid_anchors, ), head.num_classes, dtype=torch.long)
-        label_weights = anchors.new_zeros(num_valid_anchors, dtype=torch.float)
+        label_weights = template.new_zeros(
+            num_valid_anchors, dtype=torch.float)
 
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
@@ -120,7 +130,7 @@ def dcfl_loss_by_feat(head, cls_scores, bbox_preds, batch_gt_instances,
             label_weights[neg_inds] = 1.0
 
         # 映射回该图的全部锚框（含图像外的）
-        num_total_anchors = flat_anchors.size(0)
+        num_total_anchors = flat_tensor.size(0)
         labels = _unmap_tensor(
             labels, num_total_anchors, inside_flags, head.num_classes)
         label_weights = _unmap_tensor(

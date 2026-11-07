@@ -1,9 +1,16 @@
-"""GauCho 版 DMM 的循环训练引擎（VEDAI / DroneVehicle 共用）。
+"""DMM 循环训练引擎（GauCho / GauCho+DCFL / DCFL 对照组共用）。
 
-仓库根目录的两个入口脚本只是传不同的数据集名：
+仓库根目录的入口脚本只是传不同的数据集键：
 
-    train_gaucho_vedai_loop.py          -> main('vedai')
-    train_gaucho_dronevehicle_loop.py   -> main('dronevehicle')
+    train_gaucho_vedai_loop.py           -> main('vedai')
+    train_gaucho_dronevehicle_loop.py    -> main('dronevehicle')
+    train_gaucho_dcfl_vedai_loop.py      -> main('vedai_dcfl')
+    train_gaucho_dcfl_dronevehicle_loop.py -> main('dronevehicle_dcfl')
+    train_dmm_dcfl_vedai_loop.py         -> 走 code/dmm_dcfl/train_loop.py
+    train_dmm_dcfl_dronevehicle_loop.py  -> 走 code/dmm_dcfl/train_loop.py
+
+每组方案在 PROFILES 里都有独立的 ``variant`` / ``detail``，
+终端横幅和汇总表标题都从这两个字段取，不会把方案名写错。
 
 完整机制（与原来的 train_vedai_loop.py / train_dronevehicle_loop.py 一致）：
 
@@ -62,6 +69,8 @@ BOOTSTRAP_CYCLE = 1
 PROFILES = {
     "vedai": dict(
         label="VEDAI",
+        variant="GauCho",
+        detail="高斯 Cholesky 回归 + GWD 损失，MaxIoU 分配",
         config=os.path.join("code", "dmm_gaucho", "configs",
                             "dmm_gaucho_1x_vedai.py"),
         work_root=os.path.join("work_dirs", "gaucho_vedai_loop"),
@@ -73,6 +82,8 @@ PROFILES = {
     ),
     "dronevehicle": dict(
         label="DroneVehicle",
+        variant="GauCho",
+        detail="高斯 Cholesky 回归 + GWD 损失，MaxIoU 分配",
         config=os.path.join("code", "dmm_gaucho", "configs",
                             "dmm_gaucho_1x_dronevehicle.py"),
         work_root=os.path.join("work_dirs", "gaucho_dronevehicle_loop"),
@@ -87,6 +98,7 @@ PROFILES = {
     "vedai_dcfl": dict(
         label="VEDAI",
         variant="GauCho + DCFL",
+        detail="高斯 Cholesky 回归 + GWD 损失，DCFL 动态分配",
         config=os.path.join("code", "dmm_gaucho", "configs",
                             "dmm_gaucho_dcfl_1x_vedai.py"),
         work_root=os.path.join("work_dirs", "gaucho_dcfl_vedai_loop"),
@@ -100,6 +112,7 @@ PROFILES = {
     "dronevehicle_dcfl": dict(
         label="DroneVehicle",
         variant="GauCho + DCFL",
+        detail="高斯 Cholesky 回归 + GWD 损失，DCFL 动态分配",
         config=os.path.join("code", "dmm_gaucho", "configs",
                             "dmm_gaucho_dcfl_1x_dronevehicle.py"),
         work_root=os.path.join("work_dirs", "gaucho_dcfl_dronevehicle_loop"),
@@ -119,6 +132,16 @@ def load_module(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def variant_of(profile):
+    """方案短名（GauCho / GauCho + DCFL / DMM + DCFL 对照组），用于标题。"""
+    return profile.get("variant") or "GauCho"
+
+
+def detail_of(profile):
+    """方案构成的具体说明，用于横幅。"""
+    return profile.get("detail") or "高斯 Cholesky 回归 + GWD 损失，MaxIoU 分配"
 
 
 excel_log = load_module(
@@ -379,7 +402,8 @@ def build_values(cycle, lr, minutes, val_metrics, test_metrics, checkpoint):
 def print_summary(profile, history, best, metrics_xlsx, work_root, run_id):
     print()
     print("=" * 78)
-    print("循环训练结果汇总（GauCho · {0}）".format(profile["label"]))
+    print("循环训练结果汇总（{0} · {1}）".format(
+        variant_of(profile), profile["label"]))
     print("=" * 78)
     print("{0:<8}{1:>14}{2:>12}{3:>12}".format(
         "轮次", "峰值学习率", "验证 mAP", "测试 mAP"))
@@ -463,11 +487,8 @@ def main(dataset):
     prepare_data(profile)
 
     print("数据集     : {0} · {1}".format(profile["label"], profile["classes"]))
-    print("模型       : {0}".format(
-        profile.get("variant", "GauCho（高斯 Cholesky 回归，GWD 损失）")))
-    if profile.get("variant"):
-        print("             分配器 DCFL（gjsd 粗筛 + 质量细选 + dgmm 掩码），"
-              "回归仍为 GauCho GWD")
+    print("模型       : {0}".format(variant_of(profile)))
+    print("构成       : {0}".format(detail_of(profile)))
     print("仓库根目录 :", REPO_ROOT)
     print("解释器     :", python)
     print("训练配置   :", config)
