@@ -52,4 +52,8 @@ def main(dataset):
 
     engine.PROFILES.clear()
     engine.PROFILES.update(PROFILES)
+    # 起点是 weights/dc2f_vedai/ 里那份 DMM + DCFL 权重：DCFL 的 cycle_7
+    # 正是从它、用 1.5625e-06 再训 12 轮，所以这里按第 7 轮起步，
+    # 起始权重 / 学习率 / epoch 数就和 DCFL 第 7 轮完全一样，只差分配器。
+    engine.BOOTSTRAP_CYCLE = 7
     return engine.main(dataset)
