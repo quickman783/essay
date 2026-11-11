@@ -69,11 +69,10 @@ STATE_FILE = os.path.join(WORK_ROOT, "run_state.json")
 # 没有状态文件时（第一次运行）使用的起始权重，留空则从头训练。
 # 这里用测试集表现最好的那份（test mAP 0.7043，验证集 0.7516）
 BOOTSTRAP_CHECKPOINT = os.path.join(
-    "work_dirs", "vedai_loop", "run_20261104_093941", "cycle_6",
-    "best_mAP0.7516_epoch1_20261104_093941.pth")
+    "")
 # 上一轮是第 7 轮，所以从这里起步算作第 8 轮
 # （学习率按 1e-4 × 0.5^7 = 7.8e-7 算，但被 MIN_LR 兜到下限 1e-6）
-BOOTSTRAP_CYCLE = 8
+BOOTSTRAP_CYCLE = 1
 
 # 所有轮次的指标都写进这一个表格
 METRICS_XLSX = os.path.join("work_dirs", "vedai_metrics.xlsx")
