@@ -153,6 +153,28 @@ def to_posix(path):
     return os.path.abspath(path).replace("\\", "/")
 
 
+def child_env():
+    """子进程（train.py / evaluate.py）的环境。
+
+    两个脚本都 ``import mmrotate``，而仓库里的 mmrotate 在 ``code/`` 下。
+    它没被真正装进 Python 环境（``easy-install.pth`` 是空文件，
+    ``mmrotate.egg-link`` 指向不存在的 ``code/DMM-main``），现在只靠
+    ``envs/paper310/mmrotate_local.pth`` 顶一下 —— 而那个 .pth 里写的是含中文的
+    路径，默认 GBK 解码会失败并被静默跳过，只有在 ``PYTHONUTF8=1`` 的
+    conda 激活环境里才生效。所以这里直接把 ``code`` 塞进 PYTHONPATH，
+    不再依赖任何 shell 状态；顺便带上 UTF-8，避免 collect_env 读中文输出崩掉。
+    """
+    env = os.environ.copy()
+    code_dir = os.path.join(REPO_ROOT, "code")
+    parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    if code_dir not in parts:
+        parts.insert(0, code_dir)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
+
+
 def cycle_lr(cycle):
     """第 cycle 轮（从 1 开始）的峰值学习率。"""
     return max(BASE_LR * (LR_DECAY ** (cycle - 1)), MIN_LR)
@@ -354,7 +376,7 @@ def run_eval(python, config, checkpoint, split, work_dir):
     label = "验证集" if split == "val" else "测试集"
     print("\n--- 在{0}上评估 ---".format(label), flush=True)
     try:
-        returncode = subprocess.call(command, cwd=REPO_ROOT)
+        returncode = subprocess.call(command, cwd=REPO_ROOT, env=child_env())
     except KeyboardInterrupt:
         print("\n评估被中断。")
         return None
@@ -614,7 +636,8 @@ def main(dataset):
 
             started = time.time()
             try:
-                returncode = subprocess.call(command, cwd=REPO_ROOT)
+                returncode = subprocess.call(
+                    command, cwd=REPO_ROOT, env=child_env())
             except KeyboardInterrupt:
                 print("\n\n已中断，正在退出循环。")
                 break
