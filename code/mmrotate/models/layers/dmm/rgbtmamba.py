@@ -9,6 +9,7 @@ import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath
 
 from .ssm_utils import CrossMerge_rgbt_k4, CrossScan_rgbt_k4
+from .c2former import C2FormerFusion
 
 from mmcv.cnn import ConvModule
 from mmengine.model import BaseModule
@@ -325,22 +326,42 @@ class DCFM(nn.Module):
         act_layer=nn.GELU,
         mlp_drop: float = 0.1,
         disable_z: bool = False,
+        fus_type: str = "dssm",
+        c2f_cfg: dict | None = None,
+        stage_idx: int = 1,
+        use_diff_gate: bool = True,
         **kwargs,
     ):
         super().__init__()
         self.use_checkpoint = use_checkpoint
-        self.norm1_vi = norm_layer(hidden_dim)
-        self.norm1_ir = norm_layer(hidden_dim)
+        self.fus_type = fus_type
+        self.use_diff_gate = use_diff_gate and fus_type == "c2f"
 
-        self.op = DSSM(
-            d_model=hidden_dim,
-            dropout=attn_drop_rate,
-            d_state=d_state,
-            ssm_ratio=ssm_ratio,
-            dt_rank=dt_rank,
-            disable_z=disable_z,
-            **kwargs,
-        )
+        if fus_type == "c2f":
+            # c2f 分支不建 norm1_vi / norm1_ir：C2Former 自带 ModalityNorm，
+            # 且前面是 1x1+ReLU，不经 LayerNorm。建了不调用会在 DDP 下变成
+            # unused parameter。
+            cfg = dict(c2f_cfg or {})
+            self.op = C2FormerFusion(
+                dims_in=hidden_dim, stage_idx=stage_idx, **cfg)
+
+            # 差异重注入门控：逐通道缩放，必须初始化为 0。
+            # 形状 (1,1,1,C) 直接广播到 NHWC。
+            if self.use_diff_gate:
+                self.diff_gate = nn.Parameter(torch.zeros(1, 1, 1, hidden_dim))
+        else:
+            self.norm1_vi = norm_layer(hidden_dim)
+            self.norm1_ir = norm_layer(hidden_dim)
+            self.op = DSSM(
+                d_model=hidden_dim,
+                dropout=attn_drop_rate,
+                d_state=d_state,
+                ssm_ratio=ssm_ratio,
+                dt_rank=dt_rank,
+                disable_z=disable_z,
+                **kwargs,
+            )
+
         self.drop_path = DropPath(drop_path)
 
         self.mlp_branch = mlp_ratio > 0
@@ -356,8 +377,22 @@ class DCFM(nn.Module):
             )
 
     def _forward(self, x_vi: torch.Tensor, x_ir: torch.Tensor):
-        x = self.op(self.norm1_vi(x_vi), self.norm1_ir(x_ir))  # B,H,W,C
-        x = x_vi + x_ir + self.drop_path(x)
+        if self.fus_type == "c2f":
+            out_for_vi, out_for_ir = self.op(x_vi, x_ir)  # 均为 NHWC
+
+            # 各自回支：out_for_vi 是「红外 query 取可见光信息」，加到 vi 支
+            x_vi_ = x_vi + self.drop_path(out_for_vi)
+            x_ir_ = x_ir + self.drop_path(out_for_ir)
+
+            if self.use_diff_gate:
+                # 差分重注入：补回 x_sub = x_vi - x_ir 这条通路。
+                # 初始化 λ=0 时该项为 0，整体严格等于 x_vi + x_ir。
+                x = x_vi_ + x_ir_ + self.diff_gate * (x_vi_ - x_ir_)
+            else:
+                x = x_vi_ + x_ir_
+        else:
+            x = self.op(self.norm1_vi(x_vi), self.norm1_ir(x_ir))  # B,H,W,C
+            x = x_vi + x_ir + self.drop_path(x)
 
         if self.mlp_branch:
             x = x + self.drop_path(self.mlp(self.norm2(x)))  # FFN
@@ -386,6 +421,10 @@ class DCFModule(BaseModule):
         mlp_drop: float = 0.1,
         sub_before: bool = True,
         disable_z: bool = False,
+        fus_type: str = "dssm",
+        c2f_cfg: dict | None = None,
+        c2f_start_level: int = 1,
+        use_diff_gate: bool = True,
         init_cfg: dict | checkpoint.List[dict] | None = None,
     ):
         super().__init__(init_cfg)
@@ -393,23 +432,50 @@ class DCFModule(BaseModule):
         self.num_ins = len(in_channels)
         self.crossModalFusBlock = nn.ModuleList()
 
+        self.fus_type = fus_type
         for i in range(self.num_ins):
-            self.crossModalFusBlock.append(
-                DCFM(
-                    hidden_dim=in_channels[i],
-                    drop_path=drop_path,
-                    mlp_ratio=mlp_ratio,
-                    norm_layer=norm_layer,
-                    attn_drop_rate=attn_drop_rate,
-                    d_state=d_state,
-                    dt_rank=dt_rank,
-                    ssm_ratio=ssm_ratio,
-                    act_layer=act_layer,
-                    mlp_drop=mlp_drop,
-                    sub_before=sub_before,
-                    disable_z=disable_z,
+            if fus_type == "c2f" and i >= c2f_start_level:
+                cfg = dict(c2f_cfg)
+                self.crossModalFusBlock.append(
+                    DCFM(
+                        hidden_dim=in_channels[i],
+                        drop_path=drop_path,
+                        mlp_ratio=mlp_ratio,
+                        norm_layer=norm_layer,
+                        fus_type="c2f",
+                        stage_idx=i,
+                        use_diff_gate=use_diff_gate,
+                        c2f_cfg=dict(
+                            dims_out=cfg["dims_out"][i],
+                            num_heads=cfg["num_heads"][i],
+                            n_groups=cfg.get(
+                                "n_groups", [1] * self.num_ins)[i],
+                            stride=cfg.get("stride", 3),
+                            offset_range_factor=cfg.get(
+                                "offset_range_factor", 2),
+                            no_off=cfg.get("no_off", False),
+                            attn_drop=cfg.get("attn_drop", 0.0),
+                            proj_drop=cfg.get("proj_drop", 0.0),
+                        ),
+                    )
                 )
-            )
+            else:
+                self.crossModalFusBlock.append(
+                    DCFM(
+                        hidden_dim=in_channels[i],
+                        drop_path=drop_path,
+                        mlp_ratio=mlp_ratio,
+                        norm_layer=norm_layer,
+                        attn_drop_rate=attn_drop_rate,
+                        d_state=d_state,
+                        dt_rank=dt_rank,
+                        ssm_ratio=ssm_ratio,
+                        act_layer=act_layer,
+                        mlp_drop=mlp_drop,
+                        sub_before=sub_before,
+                        disable_z=disable_z,
+                    )
+                )
 
     def forward(self, x_vi: torch.Tensor, x_ir: torch.Tensor):
         outs = []

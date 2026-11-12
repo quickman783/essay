@@ -40,3 +40,5 @@ STOP
 
 # ── 上游 mmrotate 自带的教程 notebook（含 17 MB 输出，非本项目代码）──
 code/demo/MMRotate_Tutorial.ipynb
+# C2Former 官方预训练权重（约 90 MB，不进版本库）
+add_new_code/C2Former-main/pretrain_weights/
