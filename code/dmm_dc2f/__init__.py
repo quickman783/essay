@@ -23,5 +23,6 @@
 from . import prior  # noqa: F401
 from . import dc2f_assigner  # noqa: F401
 from . import dc2f_heads  # noqa: F401
+from . import dc2f_raga  # noqa: F401
 
-__all__ = ['prior', 'dc2f_assigner', 'dc2f_heads']
+__all__ = ['prior', 'dc2f_assigner', 'dc2f_heads', 'dc2f_raga']
