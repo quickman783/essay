@@ -91,7 +91,8 @@ class TaskPriorModulator(nn.Module):
             self.tau * self.la_conv2(F.relu(self.la_conv1(prior))))
 
         # 系数按「段」缩放共享卷积核，得到逐样本的 (C, S*C) 动态权重
-        dyn = coef.unsqueeze(1).unsqueeze(-1) * \
+        # coef 是 (b, S, 1, 1)，必须 reshape 成 (b, 1, S, 1) 才能和权重的段维对齐
+        dyn = coef.view(b, 1, self.stacked_convs, 1) * \
             self.reduction_conv.conv.weight.view(
                 1, self.feat_channels, self.stacked_convs, self.feat_channels)
         dyn = dyn.view(b, self.feat_channels, self.in_channels)
