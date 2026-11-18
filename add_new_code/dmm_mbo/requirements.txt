@@ -1,0 +1,11 @@
+einops
+timm==0.9.16
+fvcore
+numpy==1.26.4
+scipy
+shapely
+matplotlib
+pycocotools
+six
+terminaltables
+rich
