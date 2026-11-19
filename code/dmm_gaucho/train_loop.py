@@ -361,6 +361,40 @@ def save_best_copy(work_dir, run_id):
     return destination, best_value
 
 
+def report_eval_failure(out_json, work_dir, split):
+    """评估失败时，把子进程留下的 traceback 打到控制台并归档。
+
+    评估是子进程，traceback 只走 stderr；控制台一滚屏就没了，
+    表格里只留一行空指标，看不出是「真没跑」还是「跑崩了」。
+    """
+    err_path = os.path.splitext(os.path.abspath(out_json))[0] + "_error.txt"
+    lines = []
+    if os.path.isfile(err_path):
+        try:
+            with open(err_path, encoding="utf-8", errors="replace") as handle:
+                lines = [l for l in handle.read().strip().splitlines() if l.strip()]
+        except OSError:
+            lines = []
+
+    if lines:
+        print("--- 评估报错（末尾 {0} 行）---".format(min(len(lines), 15)))
+        for line in lines[-15:]:
+            print(line)
+    else:
+        print("评估子进程没有留下 traceback（可能被强杀或显存不足）。")
+
+    target = os.path.join(work_dir, "eval_errors.log")
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write("\n===== {0} · {1} =====\n".format(
+                time.strftime("%Y-%m-%d %H:%M:%S"), split))
+            handle.write("\n".join(lines) + "\n")
+        print("评估报错已留档 : {0}".format(
+            os.path.relpath(target, REPO_ROOT)))
+    except OSError:
+        pass
+
+
 def run_eval(python, config, checkpoint, split, work_dir):
     """在指定划分上评估权重，返回 {指标名: 数值}；失败返回 None。"""
     out_json = os.path.join(work_dir, "{0}_metrics.json".format(split))
@@ -382,6 +416,7 @@ def run_eval(python, config, checkpoint, split, work_dir):
         return None
     if returncode != 0 or not os.path.isfile(out_json):
         print("评估失败（退出码 {0}）".format(returncode))
+        report_eval_failure(out_json, work_dir, split)
         return None
     with open(out_json, encoding="utf-8") as handle:
         return json.load(handle)

@@ -82,5 +82,34 @@ def main():
     return 0
 
 
+def _dump_failure():
+    """把 traceback 落到 --out 旁边，训练循环会读这个文件。
+
+    评估是以子进程方式被调用的，它的 traceback 只会打在控制台上。
+    用户如果用 IDE 的 ▶ 运行、或控制台被刷屏，报错就彻底丢了，
+    表格里只会留下一行空指标。这里强制留档。
+    """
+    import traceback
+
+    traceback.print_exc()
+    argv = sys.argv[1:]
+    if "--out" not in argv:
+        return
+    out = argv[argv.index("--out") + 1]
+    err_path = os.path.splitext(os.path.abspath(out))[0] + "_error.txt"
+    try:
+        os.makedirs(os.path.dirname(err_path) or ".", exist_ok=True)
+        with open(err_path, "w", encoding="utf-8") as handle:
+            handle.write(traceback.format_exc())
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        _dump_failure()
+        sys.exit(1)

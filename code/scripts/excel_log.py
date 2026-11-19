@@ -58,8 +58,14 @@ def _cell_xml(ref, value):
         value = int(value)
     if isinstance(value, (int, float)):
         if isinstance(value, float):
-            value = round(value, _FLOAT_DIGITS)
-        text = repr(value) if isinstance(value, float) else str(value)
+            # 学习率这类小量不能按 4 位小数截断，否则 5e-05 会被写成 0.0001、
+            # 2.5e-05 直接变成 0.0000。这里保留原值的完整往返表示。
+            if 0 < abs(value) < 1e-3:
+                text = repr(value)
+            else:
+                text = repr(round(value, _FLOAT_DIGITS))
+        else:
+            text = str(value)
         return '<c r="{0}"><v>{1}</v></c>'.format(ref, escape(text))
     return '<c r="{0}" t="inlineStr"><is><t xml:space="preserve">{1}</t></is></c>'.format(
         ref, escape(str(value)))
@@ -132,10 +138,14 @@ def append_row(xlsx_path, header, values, csv_path=None, sheet_name="训练记�
     if not existing_header:
         existing_header = list(header)
 
-    # 追加新列，保持已有列的顺序不变
+    # 追加新列，保持已有列的顺序不变；"检查点"永远压在最后一列，
+    # 否则后续轮次新增的类别 AP 列会把它挤到表头中间。
     for name in header:
         if name not in existing_header:
-            existing_header.append(name)
+            if "检查点" in existing_header:
+                existing_header.insert(existing_header.index("检查点"), name)
+            else:
+                existing_header.append(name)
 
     existing_rows.append([_num_to_text(values.get(name, "")) for name in existing_header])
 
@@ -150,7 +160,13 @@ def append_row(xlsx_path, header, values, csv_path=None, sheet_name="训练记�
 
 
 def _num_to_text(value):
+    """CSV 里的文本形式。
+
+    学习率一类的极小量用科学计数法，避免 4 位小数把 2.5e-05 压成 0.0000。
+    """
     if isinstance(value, float):
+        if 0 < abs(value) < 1e-3:
+            return "{0:.4e}".format(value)
         return "{0:.{1}f}".format(value, _FLOAT_DIGITS)
     return "" if value is None else str(value)
 
