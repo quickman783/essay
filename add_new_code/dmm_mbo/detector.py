@@ -1,6 +1,7 @@
 """DMM baseline + RGB/IR auxiliary S2A branches, used only by loss()."""
 from copy import deepcopy
 
+import torch
 from torch import nn
 from mmdet.models.utils import unpack_gt_instances
 
@@ -20,7 +21,9 @@ class MBODMMDetector(virRefineSingleStageDetector):
     then identical in structure to the baseline detector's state_dict.
     """
 
-    def __init__(self, *args, mbo_cfg=None, mbo_auxiliary=True, **kwargs):
+    def __init__(self, *args, mbo_cfg=None, mbo_auxiliary=True,
+                 mbo_fork='pre', mbo_refine_fusion=False,
+                 mbo_gamma_init=0.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.mbo_cfg = dict(
             enabled=True, temperature=1.0, aux_loss_weight=1.0,
@@ -50,6 +53,28 @@ class MBODMMDetector(virRefineSingleStageDetector):
             self.mbo_refine_heads = nn.ModuleDict({
                 name: deepcopy(self.bbox_head_refine) for name in ('rgb', 'ir')})
 
+        if mbo_fork not in ('pre', 'post'):
+            raise ValueError("mbo_fork must be 'pre' or 'post'")
+        self.mbo_fork = mbo_fork
+        self.mbo_refine_fusion = bool(mbo_refine_fusion)
+
+        if self.mbo_refine_fusion:
+            if not self.mbo_auxiliary:
+                raise ValueError('mbo_refine_fusion requires mbo_auxiliary=True')
+            if self.mbo_fork == 'post':
+                raise ValueError("mbo_refine_fusion needs mbo_fork='pre'")
+            # feat_refine_module 是 AlignConv 的单实例，直接从已有 head 里
+            # deepcopy，别从 frm_cfg 重新 build（配置可能已不在 kwargs 里）。
+            self.refine_align = nn.ModuleDict({
+                name: nn.ModuleList([
+                    deepcopy(head.feat_refine_module)
+                    for head in self.bbox_head_refine])
+                for name in ('rgb', 'ir')})
+            # gamma 初值 0：初始化瞬间 aux 项为 0，前向与原路径逐位相同
+            self.refine_gamma = nn.ParameterList([
+                nn.Parameter(torch.tensor(float(mbo_gamma_init)))
+                for _ in range(self.num_refine_stages)])
+
     def init_weights(self):
         super().init_weights()
         if self.mbo_auxiliary:
@@ -61,6 +86,11 @@ class MBODMMDetector(virRefineSingleStageDetector):
                 self.mbo_init_heads[branch].init_weights()
                 for head in self.mbo_refine_heads[branch]:
                     head.init_weights()
+        if self.mbo_refine_fusion:
+            # AlignConv 藏在 ModuleDict / ModuleList 里，父类遍历不到
+            for stage in range(self.num_refine_stages):
+                for name in ('rgb', 'ir'):
+                    self.refine_align[name][stage].init_weights()
 
     def _training_features(self, rgb, ir):
         rgb = self.backbone_vi(rgb)
@@ -71,9 +101,23 @@ class MBODMMDetector(virRefineSingleStageDetector):
             fused = self.fusblock(rgb, ir)
         else:
             fused = tuple(v + t for v, t in zip(rgb, ir))
-        # Branch from these features, never from the DCFM output.
-        return (self.neck(fused), self.mbo_necks['rgb'](rgb),
-                self.mbo_necks['ir'](ir))
+        if self.mbo_fork == 'post':
+            # 消融：两条辅助支路都吃融合特征（neck 仍各自独立，参数量与 pre 一致）
+            branch_rgb = branch_ir = fused
+        else:
+            branch_rgb, branch_ir = rgb, ir
+        return (self.neck(fused), self.mbo_necks['rgb'](branch_rgb),
+                self.mbo_necks['ir'](branch_ir))
+
+    def _refine_features(self, stage, features, rois):
+        """AlignConv(fused) + gamma * [AlignConv(rgb) + AlignConv(ir)]."""
+        base = self.bbox_head_refine[stage].feature_refine(features[0], rois)
+        if not self.mbo_refine_fusion:
+            return base
+        gamma = self.refine_gamma[stage]
+        aux_rgb = self.refine_align['rgb'][stage](features[1], rois)
+        aux_ir = self.refine_align['ir'][stage](features[2], rois)
+        return [b + gamma * (r + i) for b, r, i in zip(base, aux_rgb, aux_ir)]
 
     def loss(self, batch_inputs, batch_inputs2, batch_data_samples):
         if not self.mbo_auxiliary:
@@ -121,8 +165,13 @@ class MBODMMDetector(virRefineSingleStageDetector):
             heads = (self.bbox_head_refine[stage],
                      self.mbo_refine_heads['rgb'][stage],
                      self.mbo_refine_heads['ir'][stage])
-            outputs = [head(head.feature_refine(x, roi))
-                       for head, x, roi in zip(heads, features, rois)]
+            outputs = []
+            for index, (head, x, roi) in enumerate(zip(heads, features, rois)):
+                if index == 0:
+                    x = self._refine_features(stage, features, roi)
+                else:
+                    x = head.feature_refine(x, roi)
+                outputs.append(head(x))
             supervise(heads, outputs, 'refine_' + str(stage), rois,
                       self.train_cfg.stage_loss_weights[stage])
             if stage + 1 < self.num_refine_stages:
@@ -130,8 +179,41 @@ class MBODMMDetector(virRefineSingleStageDetector):
                         for head, out, roi in zip(heads, outputs, rois)]
         return losses
 
+    def predict(self, batch_inputs, batch_inputs2, batch_data_samples,
+                rescale=True):
+        if not self.mbo_refine_fusion:
+            return super().predict(batch_inputs, batch_inputs2,
+                                   batch_data_samples, rescale=rescale)
+        features = self._training_features(batch_inputs, batch_inputs2)
+        outs = self.bbox_head_init(features[0])
+        rois = self.bbox_head_init.filter_bboxes(*outs)
+        for stage in range(self.num_refine_stages):
+            head = self.bbox_head_refine[stage]
+            outs = head(self._refine_features(stage, features, rois))
+            if stage + 1 < self.num_refine_stages:
+                rois = head.refine_bboxes(*outs, rois)
+        batch_img_metas = [s.metainfo for s in batch_data_samples]
+        predictions = self.bbox_head_refine[-1].predict_by_feat(
+            *outs, rois=rois, batch_img_metas=batch_img_metas, rescale=rescale)
+        return self.add_pred_to_datasample(batch_data_samples, predictions)
+
+    def _forward(self, batch_inputs, batch_inputs2, batch_data_samples=None):
+        if not self.mbo_refine_fusion:
+            return super()._forward(batch_inputs, batch_inputs2)
+        features = self._training_features(batch_inputs, batch_inputs2)
+        outs = self.bbox_head_init(features[0])
+        rois = self.bbox_head_init.filter_bboxes(*outs)
+        for stage in range(self.num_refine_stages):
+            head = self.bbox_head_refine[stage]
+            outs = head(self._refine_features(stage, features, rois))
+            if stage + 1 < self.num_refine_stages:
+                rois = head.refine_bboxes(*outs, rois)
+        return outs
+
     def remove_auxiliary_branches(self):
         """Release training-only modules before deployment; leaves fusion intact."""
+        if self.mbo_refine_fusion:
+            raise RuntimeError('refine fusion needs the auxiliary branches')
         if self.training:
             raise RuntimeError('Call eval() before removing auxiliary branches')
         for name in ('mbo_necks', 'mbo_init_heads', 'mbo_refine_heads'):
