@@ -42,3 +42,8 @@ STOP
 code/demo/MMRotate_Tutorial.ipynb
 # C2Former 官方预训练权重（约 90 MB，不进版本库）
 add_new_code/C2Former-main/pretrain_weights/
+
+# 任何位置生成的权重/检查点，一律不进版本库（单个 0.3-0.4 GB）
+*.pth
+*.pth.tar
+*.ckpt
