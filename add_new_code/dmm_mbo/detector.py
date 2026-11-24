@@ -27,7 +27,10 @@ class MBODMMDetector(virRefineSingleStageDetector):
         super().__init__(*args, **kwargs)
         self.mbo_cfg = dict(
             enabled=True, temperature=1.0, aux_loss_weight=1.0,
-            cost_class=1.0, cost_bbox=1.0)
+            cost_class=1.0, cost_bbox=1.0,
+            refine_aux_scale=1.0,
+            density_gate=False, density_ref=12.0, density_power=2.0,
+            density_value=0.0)
         if mbo_cfg:
             unknown = set(mbo_cfg) - set(self.mbo_cfg)
             if unknown:
@@ -36,10 +39,26 @@ class MBODMMDetector(virRefineSingleStageDetector):
         if self.mbo_cfg['temperature'] <= 0:
             raise ValueError('MBO temperature must be positive')
         if any(self.mbo_cfg[k] < 0 for k in (
-                'aux_loss_weight', 'cost_class', 'cost_bbox')):
+                'aux_loss_weight', 'cost_class', 'cost_bbox',
+                'refine_aux_scale')):
             raise ValueError('MBO loss/cost coefficients must be nonnegative')
         if self.mbo_cfg['cost_class'] + self.mbo_cfg['cost_bbox'] <= 0:
             raise ValueError('At least one MBO cost coefficient must be positive')
+        if self.mbo_cfg['density_gate']:
+            if self.mbo_cfg['density_ref'] <= 0:
+                raise ValueError('MBO density_ref must be positive')
+            if self.mbo_cfg['density_power'] <= 0:
+                raise ValueError('MBO density_power must be positive')
+            if self.mbo_cfg['density_value'] <= 0:
+                raise ValueError(
+                    'mbo_cfg.density_gate needs a positive density_value: '
+                    'the training set mean instances per image')
+            self.mbo_gate = min(
+                1.0,
+                (self.mbo_cfg['density_value'] / self.mbo_cfg['density_ref'])
+                ** self.mbo_cfg['density_power'])
+        else:
+            self.mbo_gate = 1.0
         self.mbo_auxiliary = mbo_auxiliary
         if self.aux_rpn_task:
             raise ValueError('Use the DMM baseline without the legacy auxiliary RPN')
@@ -124,6 +143,9 @@ class MBODMMDetector(virRefineSingleStageDetector):
             raise RuntimeError('Auxiliary-free model is for inference only')
         features = self._training_features(batch_inputs, batch_inputs2)
         gt, ignored, metas = unpack_gt_instances(batch_data_samples)
+        n_gt = sum(len(g) for g in gt)
+        density = n_gt / max(len(batch_data_samples), 1)
+        gate = self.mbo_gate
         # The baseline's primary gt_instances are IR annotations. Reuse the
         # identical objects in all branches: RGB/IR annotation lists are NOT
         # one-to-one and must never be zipped by their annotation index.
@@ -132,8 +154,12 @@ class MBODMMDetector(virRefineSingleStageDetector):
                  self.mbo_init_heads['ir'])
         outputs = [head(x) for head, x in zip(heads, features)]
         losses = {}
+        # 监控键（不含 "loss"，不参与反传）
+        losses['mbo_gate'] = features[0][0].new_tensor(gate)
+        losses['mbo_density'] = features[0][0].new_tensor(density)
 
-        def supervise(stage_heads, stage_outputs, stage, rois=None, scale=1.0):
+        def supervise(stage_heads, stage_outputs, stage, rois=None, scale=1.0,
+                      aux_scale=1.0):
             prepared = [prepare_loss(
                 head, out, gt, metas, ignored,
                 rois=None if rois is None else rois[index],
@@ -143,8 +169,9 @@ class MBODMMDetector(virRefineSingleStageDetector):
             parts, diagnostics = balanced_stage_losses(
                 prepared, self.mbo_cfg['temperature'], self.mbo_cfg['enabled'])
             for index, (name, part) in enumerate(zip(names, parts)):
-                branch_scale = scale * (1.0 if index == 0 else
-                                        self.mbo_cfg['aux_loss_weight'])
+                branch_scale = scale * (
+                    1.0 if index == 0 else
+                    self.mbo_cfg['aux_loss_weight'] * gate * aux_scale)
                 for key, value in part.items():
                     # Preserve the fusion loss names used in baseline logs.
                     suffix = stage if index == 0 else name + '_' + stage
@@ -158,6 +185,8 @@ class MBODMMDetector(virRefineSingleStageDetector):
                 losses['mbo_cost_' + name + '_' + stage] = (
                     c[valid].mean() if valid.any() else c.new_tensor(0.0))
             losses['mbo_matched_gts_' + stage] = diagnostics['valid'].all(0).sum().float()
+            losses['mbo_aux_scale_' + stage] = features[0][0].new_tensor(
+                aux_scale)
 
         supervise(heads, outputs, 'init')
         rois = [head.filter_bboxes(*out) for head, out in zip(heads, outputs)]
@@ -173,7 +202,8 @@ class MBODMMDetector(virRefineSingleStageDetector):
                     x = head.feature_refine(x, roi)
                 outputs.append(head(x))
             supervise(heads, outputs, 'refine_' + str(stage), rois,
-                      self.train_cfg.stage_loss_weights[stage])
+                      self.train_cfg.stage_loss_weights[stage],
+                      aux_scale=self.mbo_cfg['refine_aux_scale'])
             if stage + 1 < self.num_refine_stages:
                 rois = [head.refine_bboxes(*out, rois=roi)
                         for head, out, roi in zip(heads, outputs, rois)]
